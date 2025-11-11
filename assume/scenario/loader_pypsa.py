@@ -42,9 +42,59 @@ def load_pypsa(
         marketdesign (list[MarketConfig]): description of the market design which will be used with the scenario
     """
     index = network.snapshots
-    index.freq = index.inferred_freq
-    start = index[0]
-    end = index[-1]
+    # Handle both MultiIndex and DatetimeIndex
+    if isinstance(index, pd.MultiIndex):
+        datetime_index = pd.DatetimeIndex(index.get_level_values(1))
+    else:
+        datetime_index = pd.DatetimeIndex(index)
+    
+    # Infer frequency from the datetime index
+    freq = pd.infer_freq(datetime_index)
+    if freq is None:
+        # If frequency cannot be inferred, calculate it from the time differences
+        if len(datetime_index) > 1:
+            time_diffs = datetime_index.to_series().diff().dropna()
+            if len(time_diffs) > 0:
+                # Get the most common time difference
+                most_common_diff = time_diffs.value_counts().index[0]
+                
+                # Map common Timedeltas to their frequency strings
+                # These values come from pd.infer_freq() output
+                timedelta_to_freq = {
+                    pd.Timedelta(minutes=1): "min",
+                    pd.Timedelta(minutes=15): "15min",
+                    pd.Timedelta(minutes=30): "30min",
+                    pd.Timedelta(hours=1): "h",
+                    pd.Timedelta(days=1): "D",
+                }
+                
+                freq_str = timedelta_to_freq.get(most_common_diff)
+                
+                if freq_str:
+                    try:
+                        datetime_index = pd.date_range(
+                            start=datetime_index[0],
+                            end=datetime_index[-1],
+                            freq=freq_str
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not create regular DatetimeIndex with frequency {freq_str}: {e}")
+                else:
+                    logger.warning(f"Could not determine standard frequency from time difference {most_common_diff}")
+            else:
+                raise ValueError("Cannot infer frequency from snapshots and insufficient data points")
+        else:
+            raise ValueError("Cannot infer frequency from snapshots and insufficient data points")
+    else:
+        # If frequency was successfully inferred, recreate with explicit freq to ensure it's set
+        datetime_index = pd.date_range(
+            start=datetime_index[0],
+            end=datetime_index[-1],
+            freq=freq
+        )
+    
+    start = datetime_index[0]
+    end = datetime_index[-1]
     simulation_id = f"{scenario}_{study_case}"
     logger.info(f"loading scenario {simulation_id}")
 
@@ -78,8 +128,17 @@ def load_pypsa(
 
     world.add_unit_operator("powerplant_operator")
     for _, generator in network.generators.iterrows():
+        # Skip generators marked as "load" - they represent demand and are handled separately
+        # in the loads section below. Including them would create duplicate demand.
+        if hasattr(generator, 'carrier') and generator.carrier == 'load':
+            continue
+        
         if generator.name in network.generators_t["p_max_pu"].columns:
             av = network.generators_t["p_max_pu"][generator.name]
+            # Reindex to match datetime_index (handles MultiIndex from PyPSA netCDF)
+            if isinstance(av.index, pd.MultiIndex):
+                av = av.reset_index(level=0, drop=True)
+            av = av.reindex(datetime_index)
         else:
             av = 1
 
@@ -89,12 +148,21 @@ def load_pypsa(
         # if p_nom is not set, generator.p_nom_extendable must be
         ramp_up = generator.ramp_limit_start_up * max_power
         ramp_down = generator.ramp_limit_shut_down * max_power
+        
+        # Ensure min_operating_time and min_down_time are > 0
+        # ASSUME requires these to be positive values
+        min_operating_time = generator.min_up_time if generator.min_up_time and generator.min_up_time > 0 else 1
+        min_down_time = generator.min_down_time if generator.min_down_time and generator.min_down_time > 0 else 1
+        
+        # Clamp min_power to max_power to avoid floating-point precision issues
+        min_power = min(generator.p_nom_min, max_power)
+        
         world.add_unit(
             generator.name,
             unit_type,
             "powerplant_operator",
             {
-                "min_power": generator.p_nom_min,
+                "min_power": min_power,
                 "max_power": max_power,
                 "bidding_strategies": bidding_strategies[unit_type][generator.name],
                 "technology": "conventional",
@@ -103,8 +171,8 @@ def load_pypsa(
                 "fuel_type": generator.carrier,
                 "ramp_up": ramp_up,
                 "ramp_down": ramp_down,
-                "min_operating_time": generator.min_up_time or 1,
-                "min_down_time": generator.min_down_time or 1,
+                "min_operating_time": min_operating_time,
+                "min_down_time": min_down_time,
             },
             PowerplantForecaster(
                 index,
@@ -122,6 +190,10 @@ def load_pypsa(
         load_t = network.loads_t["p_set"][load.name]
         unit_type = "demand"
 
+        # Reindex to match datetime_index (handles MultiIndex from PyPSA netCDF)
+        if isinstance(load_t.index, pd.MultiIndex):
+            load_t = load_t.reset_index(level=0, drop=True)
+        load_t = load_t.reindex(datetime_index)
         world.add_unit(
             load.name,
             unit_type,
@@ -137,33 +209,48 @@ def load_pypsa(
             DemandForecaster(index, demand=-abs(load_t)),
         )
 
+    # Note: Storage units require MinMaxChargeStrategy-based bidding strategies
+    # We provide a default storage strategy (flexableEOMStorage) but users can override
+    # by passing custom bidding_strategies for the "storage" unit type
     world.add_unit_operator("storage_operator")
-    for _, storage in network.storage_units.iterrows():
-        if storage.name in network.storage_units_t["p_set"].columns:
-            storage = network.storage_units_t["p_set"][storage.name]
-        else:
-            # we have no storage
+    for _, storage_unit in network.storage_units.iterrows():
+        # Skip storage units with zero nominal power
+        if storage_unit.p_nom == 0:
             continue
+        
+        # Reindex timeseries if available
+        if storage_unit.name in network.storage_units_t["p_set"].columns:
+            storage_t = network.storage_units_t["p_set"][storage_unit.name]
+            # Reindex to match datetime_index (handles MultiIndex from PyPSA netCDF)
+            if isinstance(storage_t.index, pd.MultiIndex):
+                storage_t = storage_t.reset_index(level=0, drop=True)
+            storage_t = storage_t.reindex(datetime_index)
 
         unit_type = "storage"
-        max_power_charge = storage.p_nom * storage.p_min_pu
-        max_power_discharge = storage.p_nom * storage.p_max_pu
+        max_power_charge = storage_unit.p_nom * storage_unit.p_min_pu
+        max_power_discharge = storage_unit.p_nom * storage_unit.p_max_pu
+
+        # Use provided bidding strategies or default to flexableEOMStorage
+        storage_strategies = bidding_strategies[unit_type].get(
+            storage_unit.name,
+            {mc.market_id: "flexable_eom_storage" for mc in marketdesign}
+        )
 
         world.add_unit(
-            f"StorageTrader_{storage.name}",
+            f"StorageTrader_{storage_unit.name}",
             unit_type,
             "storage_operator",
             {
                 "max_power_charge": max_power_charge,
                 "max_power_discharge": max_power_discharge,
-                "efficiency_charge": storage.efficiency_store,
-                "efficiency_discharge": storage.efficiency_dispatch,
-                "initial_soc": storage.state_of_charge_initial,
-                "capacity": storage.p_nom * storage.max_hours,
-                "bidding_strategies": bidding_strategies[unit_type][storage.name],
-                "technology": storage.carrier,
-                "emission_factor": storage.emission_factor or 0,
-                "node": storage.bus,
+                "efficiency_charge": storage_unit.efficiency_store,
+                "efficiency_discharge": storage_unit.efficiency_dispatch,
+                "initial_soc": storage_unit.state_of_charge_initial,
+                "capacity": storage_unit.p_nom * storage_unit.max_hours,
+                "bidding_strategies": storage_strategies,
+                "technology": storage_unit.carrier,
+                "emission_factor": getattr(storage_unit, 'emission_factor', 0) or 0,
+                "node": storage_unit.bus,
             },
             UnitForecaster(index),
         )

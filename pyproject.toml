@@ -44,6 +44,7 @@ dependencies = [
     "pyomo >=6.8.0",
     "xarray",
     "highspy",
+    "nbformat >= 4.2.0",
 ]
 
 [project.optional-dependencies]
