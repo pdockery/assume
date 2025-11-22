@@ -105,15 +105,46 @@ def load_file(
             if len(df.index) == 1:
                 return df
 
-            if len(df.index) != len(index) and not isinstance(
-                df.index, pd.DatetimeIndex
-            ):
-                logger.warning(
-                    f"{file_name}: simulation time line does not match length of dataframe and index is not a datetimeindex. Returning None."
-                )
-                return None
+            # If the CSV index is not a DatetimeIndex try a best-effort conversion:
+            # 1) If values look like datetimes, parse them; 2) fallback to the provided `index` if lengths match.
+            if not isinstance(df.index, pd.DatetimeIndex):
+                # Try parsing the existing index values to datetimes
+                try:
+                    parsed_idx = pd.to_datetime(df.index, errors="coerce")
+                    if not parsed_idx.isnull().all():
+                        df.index = pd.DatetimeIndex(parsed_idx)
+                        logger.debug(f"Parsed index values to DatetimeIndex for {file_name}")
+                    elif len(df.index) == len(index):
+                        # Fall back to provided index (likely export dropped timestamps)
+                        df.index = index
+                        logger.debug(
+                            f"Assigned provided simulation index to {file_name} since CSV index was numeric and lengths matched"
+                        )
+                    else:
+                        logger.warning(
+                            f"{file_name}: simulation time line does not match length of dataframe and index is not a datetimeindex. Returning None."
+                        )
+                        return None
+                except Exception:
+                    logger.warning(
+                        f"{file_name}: could not parse CSV index as datetimes. Returning None."
+                    )
+                    return None
 
-            df.index.freq = df.index.inferred_freq
+            # At this point df.index should be a DatetimeIndex
+            try:
+                df.index.freq = df.index.inferred_freq
+            except Exception:
+                # If inferred_freq is not available (e.g. irregular or newly-assigned index), fall back to the expected simulation index freq
+                if hasattr(index, "freq") and index.freq is not None:
+                    logger.debug(
+                        f"Setting index.freq for {file_name} from simulation index ({index.freq}) as inferred_freq was not available"
+                    )
+                    df.index.freq = index.freq
+                else:
+                    logger.debug(
+                        f"Could not determine freq for {file_name}; continuing without setting index.freq"
+                    )
 
             if len(df.index) < len(index) and df.index.freq == index.freq:
                 logger.warning(

@@ -350,7 +350,14 @@ class ForecastInitialisation:
             5. Aggregates the fuel cost, emissions cost, and fixed cost to obtain the marginal cost of the power plant.
         """
 
-        if pp_series.fuel_type in self.fuel_prices.keys():
+        # Prefer unit-specific fuel price column if present (e.g., per-generator prices),
+        # otherwise fall back to generic fuel_type column.
+        if pp_series.name in self.fuel_prices.columns:
+            fuel_price = self.fuel_prices[pp_series.name]
+            self.logger.debug(
+                f"Using unit-specific fuel price column for {pp_series.name}"
+            )
+        elif pp_series.fuel_type in self.fuel_prices.keys():
             fuel_price = self.fuel_prices[pp_series.fuel_type]
         else:
             fuel_price = pd.Series(0.0, index=self.index)

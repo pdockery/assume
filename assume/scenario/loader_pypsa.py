@@ -40,6 +40,11 @@ def load_pypsa(
         study_case (str): study case name
         network (pypsa.Network): pypsa Network from which the simulation properties and timeseries data is extracted
         marketdesign (list[MarketConfig]): description of the market design which will be used with the scenario
+
+    Notes:
+        - If a time-varying `generators_t.marginal_cost` table is present, per-generator
+          marginal cost series are attached to `PowerplantForecaster.fuel_prices`.
+          Otherwise the static `generator.marginal_cost` scalar is used.
     """
     index = network.snapshots
     # Handle both MultiIndex and DatetimeIndex
@@ -142,6 +147,44 @@ def load_pypsa(
         else:
             av = 1
 
+        # Retrieve marginal cost: prefer time-varying series if available in generators_t.marginal_cost
+        # Otherwise derive synthetic cost from heat_rate * fuel_cost + variable_cost if attributes present
+        # Final fallback to scalar generator.marginal_cost
+        fuel_price_obj = generator.marginal_cost
+        try:
+            if hasattr(network.generators_t, "marginal_cost") and generator.name in network.generators_t.marginal_cost.columns:
+                mc_series = network.generators_t.marginal_cost[generator.name]
+                if isinstance(mc_series.index, pd.MultiIndex):
+                    mc_series = mc_series.reset_index(level=0, drop=True)
+                mc_series = mc_series.reindex(datetime_index)
+                # Use the series only if it contains more than one timestamp and has at least one non-null value
+                if len(mc_series) > 1 and not mc_series.isnull().all():
+                    fuel_price_obj = mc_series
+                    logger.debug(f"Using time-varying marginal_cost series for generator {generator.name}")
+        except Exception as e:
+            logger.warning(f"Failed to attach time-varying marginal_cost for {generator.name}: {e}. Falling back to scalar.")
+        
+        # If still scalar/zero and static attributes available, synthesize marginal cost
+        if not isinstance(fuel_price_obj, pd.Series) or (isinstance(fuel_price_obj, pd.Series) and fuel_price_obj.sum() == 0):
+            # Attempt to derive from heat_rate, fuel_cost, variable_cost
+            synthetic_cost = 0.0
+            try:
+                # Heat rate (thermal efficiency inverse) and fuel cost
+                heat_rate = getattr(generator, 'heat_rate', None)
+                fuel_cost = getattr(generator, 'fuel_cost', None)
+                if heat_rate is not None and fuel_cost is not None:
+                    synthetic_cost += float(heat_rate) * float(fuel_cost)
+                # Add variable cost if present
+                variable_cost = getattr(generator, 'variable_cost', None)
+                if variable_cost is not None:
+                    synthetic_cost += float(variable_cost)
+                # If synthetic cost derived, broadcast to time series
+                if synthetic_cost > 0:
+                    fuel_price_obj = pd.Series(synthetic_cost, index=datetime_index)
+                    logger.debug(f"Derived synthetic marginal_cost={synthetic_cost:.2f} for {generator.name} from heat_rate/fuel_cost/variable_cost")
+            except Exception as e:
+                logger.debug(f"Could not derive synthetic cost for {generator.name}: {e}")
+
         unit_type = "power_plant"
 
         max_power = generator.max_power or 1000
@@ -157,6 +200,23 @@ def load_pypsa(
         # Clamp min_power to max_power to avoid floating-point precision issues
         min_power = min(generator.p_nom_min, max_power)
         
+        # Build fuel_prices mapping with both fuel type and generator-specific key
+        fuel_prices_mapping = {}
+        # Attach fuel type key if present
+        if getattr(generator, "carrier", None):
+            fuel_prices_mapping[generator.carrier] = fuel_price_obj
+        # Generator-specific key always added to enable per-generator export even when carrier missing
+        if isinstance(fuel_price_obj, pd.Series):
+            gen_series = fuel_price_obj.reindex(datetime_index)
+        else:
+            # Broadcast scalar to full datetime_index
+            try:
+                scalar_val = float(fuel_price_obj)
+            except Exception:
+                scalar_val = 0.0
+            gen_series = pd.Series(scalar_val, index=datetime_index)
+        fuel_prices_mapping[generator.name] = gen_series
+
         world.add_unit(
             generator.name,
             unit_type,
@@ -175,8 +235,9 @@ def load_pypsa(
                 "min_down_time": min_down_time,
             },
             PowerplantForecaster(
-                index,
-                fuel_prices={generator.carrier: generator.marginal_cost},
+                datetime_index,
+                # Provide both per-fuel and per-generator keys.
+                fuel_prices=fuel_prices_mapping,
                 availability=av,
             ),
         )
@@ -194,6 +255,10 @@ def load_pypsa(
         if isinstance(load_t.index, pd.MultiIndex):
             load_t = load_t.reset_index(level=0, drop=True)
         load_t = load_t.reindex(datetime_index)
+
+        # Negate load values: ASSUME requires demand to be negative (consumption)
+        load_t_negated = -load_t
+
         world.add_unit(
             load.name,
             unit_type,
@@ -206,7 +271,7 @@ def load_pypsa(
                 "node": load.node,
                 "price": 1e3,
             },
-            DemandForecaster(index, demand=-abs(load_t)),
+            DemandForecaster(datetime_index, demand=load_t_negated),
         )
 
     # Note: Storage units require MinMaxChargeStrategy-based bidding strategies
@@ -214,7 +279,7 @@ def load_pypsa(
     # by passing custom bidding_strategies for the "storage" unit type
     world.add_unit_operator("storage_operator")
     for _, storage_unit in network.storage_units.iterrows():
-        # Skip storage units with zero nominal power
+        # Skip expandable storage units (p_nom == 0)
         if storage_unit.p_nom == 0:
             continue
         
@@ -236,6 +301,9 @@ def load_pypsa(
             {mc.market_id: "flexable_eom_storage" for mc in marketdesign}
         )
 
+        # Determine storage technology from carrier if available, otherwise default to battery
+        storage_tech = getattr(storage_unit, 'carrier', 'battery') or 'battery'
+
         world.add_unit(
             f"StorageTrader_{storage_unit.name}",
             unit_type,
@@ -248,12 +316,44 @@ def load_pypsa(
                 "initial_soc": storage_unit.state_of_charge_initial,
                 "capacity": storage_unit.p_nom * storage_unit.max_hours,
                 "bidding_strategies": storage_strategies,
-                "technology": storage_unit.carrier,
+                "technology": storage_tech,
                 "emission_factor": getattr(storage_unit, 'emission_factor', 0) or 0,
                 "node": storage_unit.bus,
             },
-            UnitForecaster(index),
+            UnitForecaster(datetime_index),
         )
+
+    # Populate forecaster.forecasts for demand, availability, and prices
+    # This enables export_world_to_csv to export time series data without helper cells
+    for uo in world.unit_operators.values():
+        for uid, unit in uo.units.items():
+            f = getattr(unit, "forecaster", None)
+            if f is None:
+                continue
+            # Skip if already populated
+            if hasattr(f, "forecasts") and f.forecasts:
+                continue
+            forecasts = {}
+            # Demand forecaster provides 'demand' attribute
+            if hasattr(f, "demand"):
+                forecasts["demand"] = f.demand
+                forecasts["energy"] = f.demand  # Export compatibility
+            # Availability for powerplants
+            if hasattr(f, "availability"):
+                forecasts["availability"] = f.availability
+                forecasts[f"availability_{uid}"] = f.availability
+            # Price series keyed by market
+            if hasattr(f, "price") and isinstance(f.price, dict):
+                for mk, series in f.price.items():
+                    forecasts[f"price_{mk}"] = series
+            # Exchange import/export
+            if hasattr(f, "volume_export"):
+                forecasts[f"{uid}_export"] = f.volume_export
+            if hasattr(f, "volume_import"):
+                forecasts[f"{uid}_import"] = f.volume_import
+            if forecasts:
+                f.forecasts = forecasts
+                logger.debug(f"Populated forecasts for {uid}: {list(forecasts.keys())}")
 
 
 if __name__ == "__main__":

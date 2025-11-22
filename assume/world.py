@@ -8,6 +8,7 @@ import sys
 import time
 import warnings
 from datetime import datetime
+import pandas as pd
 from pathlib import Path
 
 from mango import (
@@ -222,6 +223,13 @@ class World:
         self.simulation_id = simulation_id
         self.start = start
         self.end = end
+
+        # Compute a time index for the simulation (used by PyPSA loader and Egret integration)
+        index_arg = kwargs.get("index", None)
+        if index_arg is not None:
+            self.index = pd.DatetimeIndex(index_arg)
+        else:
+            self.index = pd.date_range(start=self.start, end=self.end, freq="h")
 
         if not learning_dict:
             self.learning_config: LearningConfig = None
