@@ -1,0 +1,545 @@
+# SCED Testbed Scenarios
+# Each scenario defines generators, loads, and optional line overrides
+# for the IEEE 9-bus network.
+#
+# Line name reference (from pandapower case9 -> PyPSA):
+#   line_0: 1->4 (250 MW)    line_3: 3->6 (300 MW)    line_6: 8->2 (250 MW)
+#   line_1: 4->5 (250 MW)    line_4: 6->7 (150 MW)    line_7: 8->9 (250 MW)
+#   line_2: 5->6 (150 MW)    line_5: 7->8 (250 MW)    line_8: 9->4 (250 MW)
+#
+# Structure: _templates defines reusable anchors; scenarios compose them
+# via YAML aliases (*anchor) and merge keys (<<: *anchor).
+
+# =====================================================================
+# TEMPLATES (reusable anchors -- not runnable scenarios)
+# =====================================================================
+_templates:
+
+  # ── Physical network ────────────────────────────────────────────────
+  generators_profit: &generators_profit
+    gen_slack_0: { bus: "1", p_max: 250.0, price: 20.0 }
+    gen_peaker_0: { bus: "1", p_max: 50.0, price: 60.0 }
+    gen_0: { bus: "2", p_max: 300.0, price: 35.0, price_cap: 60.0 }
+    gen_1: { bus: "3", p_max: 270.0, price: 50.0, price_cap: 100.0 }
+
+  loads: &loads
+    load_0: { bus: "5", p_base: 90.0 }
+    load_1: { bus: "7", p_base: 100.0 }
+    load_2: { bus: "9", p_base: 125.0 }
+
+  profile: &profile
+    type: diurnal
+    base: 0.6
+    amplitude: 0.4
+    phase_shift: 4
+    period: 32
+    clip_min: 0.5
+    clip_max: 1.0
+
+  # line_1 = bus 4->5, line_5 = bus 7->8
+  line_overrides_congested: &line_overrides_congested
+    line_1: { s_nom: 90.0 }
+    line_5: { s_nom: 90.0 }
+
+  # ── Training scaffold (shared by all ProfitStrategy scenarios) ──────
+  training_profit: &training_profit
+    episodes: 1000
+    min_bid_price: 0.0
+    max_bid_price: 100.0
+    initial_experience_episodes: 20
+    validation_interval: 5
+    exploration_reset_interval: 50
+    rl_agents: ["gen_0"]
+    rl_strategy: "powerplant_energy_profit"
+    forecast_mode: "exclude_rl"
+    bc_warmstart:
+      strategy: "forecast_markup"
+      params: {}
+      bc_steps: 200
+      bc_lr: 0.01
+
+  # ── Per-algorithm learning configs (complete) ───────────────────────
+
+  lc_matd3: &lc_matd3
+    # Exploration (additive noise is the only mechanism for MATD3)
+    noise_sigma: 0.15              # price noise, decays via linear schedule
+    noise_sigma_volume: 0.3        # volume noise (wider is fine)
+    noise_dt: 1.0
+    action_noise_schedule: "linear"
+    exploration_noise_std: 0.6     # std for initial_experience episodes
+    replay_buffer_size: 50000
+    bc_reexplore_interval: 20
+    param_noise_sigma: 0.0
+    # Exploitation
+    learning_rate: 0.0001
+    gradient_steps: 20
+    batch_size: 64
+    gamma: 0.0
+    # Network
+    actor_hidden_1: 64
+    actor_hidden_2: 32
+    # Critic warmup
+    critic_warmup_steps: 100
+    warmup_noise_scale: 0.1
+    # BC regularization
+    bc_regularization_lambda: 0.0
+    bc_regularization_decay: 0.0
+    # PopArt + PER
+    popart_enabled: true
+    popart_beta: 0.0003
+    per_enabled: true
+    per_alpha: 0.8
+    per_beta_start: 0.4
+    per_beta_anneal_steps: 100000
+    # Guardrails
+    vol_penalty: 50.0
+    vol_steepness: 0.03
+    price_penalty: 30.0
+    price_steepness: 0.05
+    # Terrain shaping (Ricker wavelets)
+    wavelet_scale: 100.0
+    vol_wavelet_scale: 300.0
+    price_wavelet_width: 2.0
+    vol_wavelet_width: 5.0
+    mc_mountain_scale: 100.0
+    shaping_anneal: 0.0
+
+  lc_sac: &lc_sac
+    # No additive noise -- SAC entropy handles exploration
+    noise_sigma: 0.0
+    noise_sigma_volume: 0.0
+    noise_dt: 1
+    action_noise_schedule: null
+    exploration_noise_std: 0.0     # entropy-only outperforms random scatter
+    replay_buffer_size: 50000
+    param_noise_sigma: 0.0
+    # SAC entropy
+    sac_initial_alpha: 0.2
+    sac_target_entropy: -1.0
+    # Exploitation
+    learning_rate: 0.0001
+    gradient_steps: 20
+    batch_size: 64
+    gamma: 0.0
+    # Network
+    actor_hidden_1: 64
+    actor_hidden_2: 32
+    # Critic warmup
+    critic_warmup_steps: 50
+    warmup_noise_scale: 0.1
+    # BC regularization
+    bc_regularization_lambda: 0.0
+    bc_regularization_decay: 0.0
+    # PopArt + PER
+    popart_enabled: true
+    popart_beta: 0.0003
+    per_enabled: true
+    per_alpha: 0.8
+    per_beta_start: 0.4
+    per_beta_anneal_steps: 100000
+    # Guardrails
+    vol_penalty: 50.0
+    vol_steepness: 0.03
+    price_penalty: 30.0
+    price_steepness: 0.05
+    # Terrain shaping (Ricker wavelets)
+    wavelet_scale: 100.0
+    vol_wavelet_scale: 300.0
+    price_wavelet_width: 2.0
+    vol_wavelet_width: 5.0
+    mc_mountain_scale: 100.0
+    shaping_anneal: 0.0
+
+  # Distributional add-on (merge FIRST to override popart_enabled)
+  lc_distributional: &lc_distributional
+    distributional_critic: true
+    n_quantiles: 32
+    quantile_huber_kappa: 1.0
+    reward_scale: 500.0
+    popart_enabled: false          # distributional handles scale via reward_scale
+
+  lc_ppo: &lc_ppo
+    actor_architecture: "dist"
+    # No additive noise -- PPO explores via stochastic policy
+    noise_sigma: 0.0
+    noise_sigma_volume: 0.0
+    noise_dt: 1
+    action_noise_schedule: null
+    exploration_noise_std: 0.6
+    replay_buffer_size: 50000
+    param_noise_sigma: 0.0
+    # PPO-specific
+    clip_ratio: 0.2
+    entropy_coef: 0.05
+    vf_coef: 0.5
+    gae_lambda: 0.95
+    ppo_max_grad_norm: 0.5
+    # Exploitation
+    learning_rate: 0.0003
+    gradient_steps: 10
+    batch_size: 64
+    gamma: 0.0
+    # Network
+    actor_hidden_1: 64
+    actor_hidden_2: 32
+    # Critic warmup
+    critic_warmup_steps: 50
+    warmup_noise_scale: 0.1
+    # BC regularization
+    bc_regularization_lambda: 0.0
+    bc_regularization_decay: 0.0
+    # PopArt + PER
+    popart_enabled: true
+    popart_beta: 0.0003
+    per_enabled: false             # PER not applicable to on-policy PPO
+    per_alpha: 0.6
+    per_beta_start: 0.4
+    per_beta_anneal_steps: 100000
+    # Guardrails
+    vol_penalty: 50.0
+    vol_steepness: 0.03
+    price_penalty: 30.0
+    price_steepness: 0.05
+    # Terrain shaping (Ricker wavelets)
+    wavelet_scale: 100.0
+    vol_wavelet_scale: 300.0
+    price_wavelet_width: 2.0
+    vol_wavelet_width: 5.0
+    mc_mountain_scale: 100.0
+    shaping_anneal: 0.0
+
+  lc_dqn: &lc_dqn
+    # Action discretization (gradient-informed)
+    n_price_bins: 25
+    n_vol_bins: 20
+    # Exploration: epsilon-greedy -> Boltzmann transition
+    epsilon_start: 1.0
+    epsilon_end: 0.1
+    epsilon_decay_episodes: 100
+    boltzmann_tau_start: 2.0
+    boltzmann_tau_end: 0.1
+    boltzmann_decay_episodes: 400
+    # No additive noise
+    noise_sigma: 0.0
+    noise_sigma_volume: 0.0
+    noise_dt: 1
+    action_noise_schedule: null
+    exploration_noise_std: 0.6
+    replay_buffer_size: 50000
+    param_noise_sigma: 0.0
+    # Exploitation
+    learning_rate: 0.0005
+    gradient_steps: 20
+    batch_size: 64
+    gamma: 0.0
+    # Network (larger -- Q-net has ~500 outputs)
+    actor_hidden_1: 256
+    actor_hidden_2: 128
+    # Target network
+    tau: 0.005
+    # No critic warmup or BC reg
+    critic_warmup_steps: 0
+    warmup_noise_scale: 0.1
+    bc_regularization_lambda: 0.0
+    bc_regularization_decay: 0.0
+    # PopArt + PER
+    popart_enabled: false
+    popart_beta: 0.0003
+    per_enabled: true
+    per_alpha: 0.6
+    per_beta_start: 0.4
+    per_beta_anneal_steps: 100000
+    # Guardrails
+    vol_penalty: 50.0
+    vol_steepness: 0.03
+    price_penalty: 30.0
+    price_steepness: 0.05
+    # Terrain shaping DISABLED for DQN
+    mountain_scale: 0.0
+    vol_ridge_scale: 0.0
+    mc_mountain_scale: 0.0
+    mountain_sigma: 3.0
+    mountain_tau: 0.5
+    vol_ridge_tau: 3.0
+    shaping_anneal: 0.0
+
+
+# =====================================================================
+# BASE SCENARIOS (uncongested, single RL agent)
+# =====================================================================
+
+base_profit_matd3:
+  name: "Base Case -- MATD3"
+  periods: 24
+  generators: *generators_profit
+  loads: *loads
+  profile: *profile
+  training:
+    <<: *training_profit
+    algorithm: matd3
+    results_dir: "testbed_results/rl_matd3"
+    learning_config:
+      <<: *lc_matd3
+
+base_profit_dmatd3:
+  name: "Distributional MATD3 -- Quantile Regression Critic"
+  periods: 24
+  generators: *generators_profit
+  loads: *loads
+  profile: *profile
+  training:
+    <<: *training_profit
+    algorithm: matd3
+    results_dir: "testbed_results/rl_dmatd3"
+    learning_config:
+      <<: [*lc_distributional, *lc_matd3]
+
+base_profit_sac:
+  name: "SAC Entropy Only -- No Additive Noise"
+  periods: 24
+  generators: *generators_profit
+  loads: *loads
+  profile: *profile
+  training:
+    <<: *training_profit
+    algorithm: sac
+    results_dir: "testbed_results/rl_sac"
+    learning_config:
+      <<: *lc_sac
+
+base_profit_dsac:
+  name: "Distributional SAC -- Quantile Regression Critic"
+  periods: 24
+  generators: *generators_profit
+  loads: *loads
+  profile: *profile
+  training:
+    <<: *training_profit
+    algorithm: sac
+    results_dir: "testbed_results/rl_dsac"
+    learning_config:
+      <<: [*lc_distributional, *lc_sac]
+
+base_profit_ppo:
+  name: "Base Case -- PPO (On-Policy)"
+  periods: 24
+  generators: *generators_profit
+  loads: *loads
+  profile: *profile
+  training:
+    <<: *training_profit
+    algorithm: ppo
+    results_dir: "testbed_results/rl_ppo"
+    learning_config:
+      <<: *lc_ppo
+
+base_profit_dqn:
+  name: "DQN Discrete Actions -- Merit-Order Cliff Learner"
+  periods: 24
+  generators: *generators_profit
+  loads: *loads
+  profile: *profile
+  training:
+    <<: *training_profit
+    algorithm: dqn
+    results_dir: "testbed_results/rl_dqn"
+    exploration_reset_interval: 0
+    bc_warmstart:
+      strategy: "forecast_markup"
+      params: {}
+      bc_steps: 0
+      bc_lr: 0.01
+    learning_config:
+      <<: *lc_dqn
+
+
+# =====================================================================
+# CONGESTED SCENARIOS (lines 4-5 & 7-8 at 90 MW, two RL agents)
+# =====================================================================
+
+# Step 1: Single RL agent on congested network
+congested_matd3:
+  name: "Congested MATD3 (Lines 4-5, 7-8 at 90 MW)"
+  periods: 24
+  generators: *generators_profit
+  loads: *loads
+  profile: *profile
+  line_overrides: *line_overrides_congested
+  training:
+    <<: *training_profit
+    algorithm: matd3
+    results_dir: "testbed_results/rl_congested_matd3"
+    learning_config:
+      <<: *lc_matd3
+
+congested_sac:
+  name: "Congested SAC (Lines 4-5, 7-8 at 90 MW)"
+  periods: 24
+  generators: *generators_profit
+  loads: *loads
+  profile: *profile
+  line_overrides: *line_overrides_congested
+  training:
+    <<: *training_profit
+    algorithm: sac
+    results_dir: "testbed_results/rl_congested_sac"
+    learning_config:
+      <<: *lc_sac
+
+congested_dmatd3:
+  name: "Congested DMATD3 (Lines 4-5, 7-8 at 90 MW)"
+  periods: 24
+  generators: *generators_profit
+  loads: *loads
+  profile: *profile
+  line_overrides: *line_overrides_congested
+  training:
+    <<: *training_profit
+    algorithm: matd3
+    results_dir: "testbed_results/rl_congested_dmatd3"
+    learning_config:
+      <<: [*lc_distributional, *lc_matd3]
+
+congested_dsac:
+  name: "Congested DSAC (Lines 4-5, 7-8 at 90 MW)"
+  periods: 24
+  generators: *generators_profit
+  loads: *loads
+  profile: *profile
+  line_overrides: *line_overrides_congested
+  training:
+    <<: *training_profit
+    algorithm: sac
+    results_dir: "testbed_results/rl_congested_dsac"
+    learning_config:
+      <<: [*lc_distributional, *lc_sac]
+
+
+# =====================================================================
+# LEGACY SCENARIOS (old strategies, preserved for reference)
+# =====================================================================
+
+base:
+  name: "Base Case (WithholdingStrategy)"
+  periods: 24
+  generators:
+    gen_slack_0: { bus: "1", p_max: 250.0, price: 20.0 }
+    gen_peaker_0: { bus: "1", p_max: 50.0, price: 60.0 }
+    gen_0:
+      bus: "2"
+      p_max: 300.0
+      price: 35.0
+      volume_shaping_rate: 0.1
+      markup_cost_rate: 1
+      price_cap: 60.0
+    gen_1:
+      bus: "3"
+      p_max: 270.0
+      price: 50.0
+      fixed_cost_rate: 1.5
+      markup_cost_rate: 1.5
+      price_cap: 100.0
+  loads: *loads
+  profile: *profile
+  training:
+    algorithm: sac
+    episodes: 300
+    min_bid_price: 0.0
+    max_bid_price: 100.0
+    initial_experience_episodes: 1
+    validation_interval: 5
+    exploration_reset_interval: 10
+    rl_agents: ["gen_0"]
+    rl_strategy: "powerplant_energy_withholding"
+    forecast_mode: "exclude_rl"
+    bc_warmstart:
+      strategy: "forecast_markup"
+      params: {}
+      bc_steps: 200
+      bc_lr: 0.01
+    learning_config:
+      noise_sigma: 0.25
+      noise_sigma_volume: 0.4
+      noise_dt: 1
+      action_noise_schedule: null
+      exploration_noise_std: 0.6
+      replay_buffer_size: 20000
+      bc_reexplore_interval: 20
+      param_noise_sigma: 0.0
+      learning_rate: 0.00005
+      gradient_steps: 15
+      batch_size: 64
+      gamma: 0.0
+      sac_initial_alpha: 0.05
+      sac_target_entropy: -2.0
+      actor_hidden_1: 32
+      actor_hidden_2: 16
+      critic_warmup_steps: 150
+      warmup_noise_scale: 0.1
+      bc_regularization_lambda: 1.0
+      bc_regularization_decay: 0.002
+      popart_enabled: true
+      popart_beta: 0.0003
+      per_enabled: true
+      per_alpha: 0.6
+      per_beta_start: 0.4
+      per_beta_anneal_steps: 100000
+      tau: 0.3
+      sigmoid_offset_max: 1.0
+      sigmoid_offset_min: 0.05
+      sigmoid_offset_anneal_rate: 0.01
+
+congested:
+  name: "Congested Legacy (WithholdingStrategy)"
+  periods: 24
+  generators:
+    gen_slack_0: { bus: "1", p_max: 250.0, price: 20.0 }
+    gen_peaker_0: { bus: "1", p_max: 50.0, price: 60.0 }
+    gen_0:
+      bus: "2"
+      p_max: 300.0
+      price: 35.0
+      fixed_cost_rate: 1.0
+      markup_cost_rate: 1.0
+      price_cap: 100.0
+    gen_1:
+      bus: "3"
+      p_max: 270.0
+      price: 50.0
+      fixed_cost_rate: 1.0
+      markup_cost_rate: 1.0
+      price_cap: 100.0
+  loads: *loads
+  profile: *profile
+  line_overrides:
+    line_1: { s_nom: 90.0 }
+    line_5: { s_nom: 90.0 }
+  training:
+    algorithm: matd3
+    episodes: 200
+    min_bid_price: 0.0
+    max_bid_price: 100.0
+    initial_experience_episodes: 20
+    validation_interval: 10
+    exploration_reset_interval: 0
+    rl_agents: ["gen_0", "gen_1"]
+    rl_strategy: "powerplant_energy_withholding"
+    forecast_mode: "exclude_rl"
+    bc_warmstart:
+      strategy: "forecast_markup"
+      params: {}
+      bc_steps: 500
+      bc_lr: 0.01
+    learning_config:
+      noise_sigma: 0.1
+      noise_dt: 1
+      action_noise_schedule: "linear"
+      exploration_noise_std: 0.1
+      replay_buffer_size: 50000
+      learning_rate: 0.0003
+      gradient_steps: 10
+      batch_size: 64
+      gamma: 0.0
+      tau_max: 5.0
+      tau_min: 0.5
+      tau_anneal_rate: 0.015

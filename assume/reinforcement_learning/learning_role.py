@@ -473,6 +473,15 @@ class Learning(Role):
         """
         if algorithm == "matd3":
             self.rl_algorithm = TD3(learning_role=self)
+        elif algorithm == "sac":
+            from assume.reinforcement_learning.algorithms.sac import SAC
+            self.rl_algorithm = SAC(learning_role=self)
+        elif algorithm == "ppo":
+            from assume.reinforcement_learning.algorithms.ppo import PPO
+            self.rl_algorithm = PPO(learning_role=self)
+        elif algorithm == "dqn":
+            from assume.reinforcement_learning.algorithms.dqn import DQN
+            self.rl_algorithm = DQN(learning_role=self)
         else:
             logger.error(f"Learning algorithm {algorithm} not implemented!")
 

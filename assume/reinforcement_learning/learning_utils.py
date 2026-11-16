@@ -98,6 +98,55 @@ class NormalActionNoise:
         self.dt = updated_decay
 
 
+def quantile_huber_loss(
+    predictions: th.Tensor,
+    targets: th.Tensor,
+    taus: th.Tensor,
+    kappa: float = 1.0,
+    weights: th.Tensor | None = None,
+) -> th.Tensor:
+    """Quantile regression Huber loss (Dabney et al. 2018).
+
+    Computes the pairwise quantile Huber loss between each predicted
+    quantile and each target quantile (N × N cross), then averages.
+
+    Args:
+        predictions: Current network quantile outputs, shape (batch, N).
+        targets: Target quantile values, shape (batch, N).
+        taus: Fixed quantile midpoints, shape (N,).
+        kappa: Huber loss threshold. 1.0 is standard.
+        weights: Optional per-sample importance weights for PER, shape (batch,).
+
+    Returns:
+        Scalar loss.
+    """
+    # Expand for pairwise: pred (batch, N, 1) vs target (batch, 1, N)
+    pred = predictions.unsqueeze(2)   # (batch, N_pred, 1)
+    targ = targets.unsqueeze(1)       # (batch, 1, N_targ)
+
+    delta = targ - pred               # (batch, N_pred, N_targ)
+
+    # Huber loss element
+    abs_delta = delta.abs()
+    huber = th.where(
+        abs_delta <= kappa,
+        0.5 * delta.pow(2),
+        kappa * (abs_delta - 0.5 * kappa),
+    )
+
+    # Asymmetric weighting: |tau_i - I(delta < 0)|
+    # taus shape (N_pred,) → (1, N_pred, 1) for broadcasting
+    tau_weight = (taus.view(1, -1, 1) - (delta < 0).float()).abs()
+
+    # Weighted loss: sum over target quantiles, mean over pred quantiles
+    element_loss = tau_weight * huber / kappa   # (batch, N_pred, N_targ)
+    per_sample_loss = element_loss.sum(dim=2).mean(dim=1)  # (batch,)
+
+    if weights is not None:
+        return (weights * per_sample_loss).mean()
+    return per_sample_loss.mean()
+
+
 def polyak_update(params, target_params, tau: float):
     """
     Perform a Polyak average update on ``target_params`` using ``params``:

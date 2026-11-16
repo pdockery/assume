@@ -1,0 +1,5 @@
+,efficiency,emission_factor,max_power,min_power,node,simulation,technology,unit_operator
+gen_0,1,0,300,0,2,ieee9_rl_egret_sced,conventional,powerplant_operator
+gen_1,1,0,270,0,3,ieee9_rl_egret_sced,conventional,powerplant_operator
+gen_slack_0,1,0,250,0,1,ieee9_rl_egret_sced,conventional,powerplant_operator
+gen_peaker_0,1,0,50,0,1,ieee9_rl_egret_sced,conventional,powerplant_operator

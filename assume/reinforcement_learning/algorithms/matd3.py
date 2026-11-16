@@ -263,6 +263,12 @@ class TD3(RLAlgorithm):
             self.obs_dim = actors_and_critics["obs_dim"]
             self.act_dim = actors_and_critics["act_dim"]
             self.unique_obs_dim = actors_and_critics["unique_obs_dim"]
+            self.n_updates = actors_and_critics.get("n_updates", 0)
+            # Restore frozen BC actors for regularization
+            bc_actors = actors_and_critics.get("bc_actors", {})
+            for u_id, strategy in self.learning_role.rl_strats.items():
+                if u_id in bc_actors and bc_actors[u_id] is not None:
+                    strategy.bc_actor = bc_actors[u_id]
 
     def check_strategy_dimensions(self) -> None:
         """
@@ -334,6 +340,8 @@ class TD3(RLAlgorithm):
 
         """
 
+        h1 = getattr(self.learning_config, "actor_hidden_1", 256)
+        h2 = getattr(self.learning_config, "actor_hidden_2", 128)
         for strategy in self.learning_role.rl_strats.values():
             strategy.actor = self.actor_architecture_class(
                 obs_dim=self.obs_dim,
@@ -341,6 +349,8 @@ class TD3(RLAlgorithm):
                 float_type=self.float_type,
                 unique_obs_dim=self.unique_obs_dim,
                 num_timeseries_obs_dim=self.num_timeseries_obs_dim,
+                actor_hidden_1=h1,
+                actor_hidden_2=h2,
             ).to(self.device)
 
             strategy.actor_target = self.actor_architecture_class(
@@ -349,6 +359,8 @@ class TD3(RLAlgorithm):
                 float_type=self.float_type,
                 unique_obs_dim=self.unique_obs_dim,
                 num_timeseries_obs_dim=self.num_timeseries_obs_dim,
+                actor_hidden_1=h1,
+                actor_hidden_2=h2,
             ).to(self.device)
 
             strategy.actor_target.load_state_dict(strategy.actor.state_dict())
@@ -374,33 +386,37 @@ class TD3(RLAlgorithm):
             If you have units with different observation dimensions. They need to have different critics and hence learning roles.
         """
         n_agents = len(self.learning_role.rl_strats)
+        lr = self.learning_role.calc_lr_from_progress(1)
+
+        if self.learning_config.distributional_critic:
+            from assume.reinforcement_learning.neural_network_architecture import (
+                DistributionalCriticTD3,
+            )
+            _critic_cls = DistributionalCriticTD3
+            _critic_kwargs = dict(n_quantiles=self.learning_config.n_quantiles)
+        else:
+            _critic_cls = CriticTD3
+            _critic_kwargs = dict(
+                use_popart=self.learning_config.popart_enabled,
+                popart_beta=self.learning_config.popart_beta,
+            )
+
+        _common = dict(
+            n_agents=n_agents,
+            obs_dim=self.obs_dim,
+            act_dim=self.act_dim,
+            unique_obs_dim=self.unique_obs_dim,
+            float_type=self.float_type,
+        )
 
         for strategy in self.learning_role.rl_strats.values():
-            strategy.critics = CriticTD3(
-                n_agents=n_agents,
-                obs_dim=self.obs_dim,
-                act_dim=self.act_dim,
-                unique_obs_dim=self.unique_obs_dim,
-                float_type=self.float_type,
-            ).to(self.device)
-
-            strategy.target_critics = CriticTD3(
-                n_agents=n_agents,
-                obs_dim=self.obs_dim,
-                act_dim=self.act_dim,
-                unique_obs_dim=self.unique_obs_dim,
-                float_type=self.float_type,
-            ).to(self.device)
+            strategy.critics = _critic_cls(**_common, **_critic_kwargs).to(self.device)
+            strategy.target_critics = _critic_cls(**_common, **_critic_kwargs).to(self.device)
 
             strategy.target_critics.load_state_dict(strategy.critics.state_dict())
             strategy.target_critics.train(mode=False)
 
-            strategy.critics.optimizer = AdamW(
-                strategy.critics.parameters(),
-                lr=self.learning_role.calc_lr_from_progress(
-                    1
-                ),  # 1 = 100% of simulation remaining, uses learning_rate from config as starting point
-            )
+            strategy.critics.optimizer = AdamW(strategy.critics.parameters(), lr=lr)
 
     def extract_policy(self) -> dict:
         """
@@ -426,6 +442,11 @@ class TD3(RLAlgorithm):
             critics[u_id] = strategy.critics
             target_critics[u_id] = strategy.target_critics
 
+        # Preserve frozen BC actors for regularization
+        bc_actors = {}
+        for u_id, strategy in self.learning_role.rl_strats.items():
+            bc_actors[u_id] = getattr(strategy, "bc_actor", None)
+
         actors_and_critics = {
             "actors": actors,
             "actor_targets": actor_targets,
@@ -434,6 +455,8 @@ class TD3(RLAlgorithm):
             "obs_dim": self.obs_dim,
             "act_dim": self.act_dim,
             "unique_obs_dim": self.unique_obs_dim,
+            "n_updates": self.n_updates,
+            "bc_actors": bc_actors,
         }
 
         return actors_and_critics
@@ -498,6 +521,10 @@ class TD3(RLAlgorithm):
             )
             strategy.action_noise.update_noise_decay(updated_noise_decay)
 
+        use_per = self.learning_config.per_enabled
+        use_popart = self.learning_config.popart_enabled
+        use_distributional = self.learning_config.distributional_critic
+
         for step in range(self.learning_config.gradient_steps):
             self.n_updates += 1
 
@@ -510,6 +537,11 @@ class TD3(RLAlgorithm):
                 transitions.next_observations,
                 transitions.rewards,
             )
+
+            # PER: extract IS weights and tree indices
+            if use_per:
+                is_weights = transitions.weights
+                tree_indices = transitions.tree_indices
 
             with th.no_grad():
                 # Select action according to policy and add clipped noise
@@ -552,6 +584,9 @@ class TD3(RLAlgorithm):
                 strategy.critics.optimizer.zero_grad(set_to_none=True)
 
             total_critic_loss = 0.0
+            # Collect per-sample TD errors across agents for PER
+            if use_per:
+                all_td_errors = []
 
             # Loop over all agents and accumulate critic loss
             for i, strategy in enumerate(strategies):
@@ -594,23 +629,74 @@ class TD3(RLAlgorithm):
 
                 # Compute the next Q-values: min over all critics targets
                 with th.no_grad():
-                    next_q_values = th.cat(
-                        critic_target(all_next_states, next_actions), dim=1
-                    )
-                    next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
-                    target_Q_values = (
-                        rewards[:, i].unsqueeze(1)
-                        + self.learning_config.gamma * next_q_values
-                    )
+                    if use_distributional:
+                        next_q1, next_q2 = critic_target(all_next_states, next_actions)
+                        next_q_values = th.min(next_q1, next_q2)  # (batch, N)
+                        reward_scale = self.learning_config.reward_scale
+                        target_Q_values = (
+                            rewards[:, i].unsqueeze(1) / reward_scale
+                            + self.learning_config.gamma * next_q_values
+                        )
+                    else:
+                        next_q_values = th.cat(
+                            critic_target(all_next_states, next_actions), dim=1
+                        )
+                        next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
+
+                        # PopArt: denormalize target critic output to raw scale
+                        if use_popart and critic_target.q1_popart is not None:
+                            next_q_values = critic_target.q1_popart.denormalize(next_q_values)
+
+                        raw_target = (
+                            rewards[:, i].unsqueeze(1)
+                            + self.learning_config.gamma * next_q_values
+                        )
+
+                        # PopArt: update stats and normalize target
+                        if use_popart and critic.q1_popart is not None:
+                            critic.q1_popart.update_stats(raw_target)
+                            critic.q2_popart.update_stats(raw_target)
+                            target_Q_values = critic.q1_popart.normalize(raw_target)
+                        else:
+                            target_Q_values = raw_target
 
                 # Get current Q-values estimates for each critic network
                 current_Q_values = critic(all_states, all_actions)
 
-                # Accumulate critic loss for this agent
-                critic_loss = sum(
-                    F.mse_loss(current_q, target_Q_values)
-                    for current_q in current_Q_values
-                )
+                if use_distributional:
+                    from assume.reinforcement_learning.learning_utils import quantile_huber_loss
+                    taus = critic.taus
+                    kappa = self.learning_config.quantile_huber_kappa
+                    w = is_weights if use_per else None
+                    q1, q2 = current_Q_values
+                    critic_loss = (
+                        quantile_huber_loss(q1, target_Q_values, taus, kappa, w)
+                        + quantile_huber_loss(q2, target_Q_values, taus, kappa, w)
+                    )
+                    if use_per:
+                        with th.no_grad():
+                            q1m = q1.mean(dim=1)
+                            target_m = target_Q_values.mean(dim=1)
+                            td_err = (target_m - q1m).abs()
+                            all_td_errors.append(td_err)
+                elif use_per:
+                    # Per-sample MSE weighted by IS weights
+                    w = is_weights.unsqueeze(1)
+                    critic_loss = sum(
+                        (w * (current_q - target_Q_values).pow(2)).mean()
+                        for current_q in current_Q_values
+                    )
+                    # TD error for priority update
+                    with th.no_grad():
+                        min_q = th.min(current_Q_values[0], current_Q_values[1])
+                        td_err = (target_Q_values - min_q).abs().squeeze(1)
+                        all_td_errors.append(td_err)
+                else:
+                    # Accumulate critic loss for this agent
+                    critic_loss = sum(
+                        F.mse_loss(current_q, target_Q_values)
+                        for current_q in current_Q_values
+                    )
 
                 # Store the critic loss for this unit ID
                 unit_params[step][strategy.unit_id]["critic_loss"] = critic_loss.item()
@@ -640,9 +726,40 @@ class TD3(RLAlgorithm):
                     max_grad_norm
                 )
 
+            # PER: update priorities using max TD error across agents
+            if use_per:
+                stacked_td = th.stack(all_td_errors, dim=0)  # [n_agents, batch]
+                max_td, _ = stacked_td.max(dim=0)
+                self.learning_role.buffer.update_priorities(
+                    tree_indices, max_td.cpu().numpy()
+                )
+
             ######################################################################
             # ACTOR UPDATE (DELAYED): Accumulate losses for all agents in one pass
+            # Skip during critic warmup to preserve BC-trained actor weights.
             ######################################################################
+            critic_warmup = self.learning_config.critic_warmup_steps
+            if self.n_updates <= critic_warmup:
+                if self.n_updates == critic_warmup:
+                    logger.info(
+                        f"MATD3: Critic warmup complete ({critic_warmup} steps). "
+                        f"Enabling actor updates."
+                    )
+                # Polyak update critics only during warmup
+                all_critic_params = []
+                all_target_critic_params = []
+                for strategy in strategies:
+                    all_critic_params.extend(strategy.critics.parameters())
+                    all_target_critic_params.extend(
+                        strategy.target_critics.parameters()
+                    )
+                polyak_update(
+                    all_critic_params,
+                    all_target_critic_params,
+                    self.learning_config.tau,
+                )
+                continue
+
             if self.n_updates % self.learning_config.policy_delay == 0:
                 # Zero-grad for all actors first
                 for strategy in strategies:
@@ -687,9 +804,22 @@ class TD3(RLAlgorithm):
                     )
 
                     # Calculate actor loss (negative Q1 of the updated action)
-                    actor_loss = -critic.q1_forward(
-                        all_states_i, all_actions_clone
-                    ).mean()
+                    # Use normalized Q-values (no denormalize) so the actor
+                    # gradient is scale-invariant across reward regimes.
+                    q1_val = critic.q1_forward(all_states_i, all_actions_clone)
+                    actor_loss = -q1_val.mean()
+
+                    # BC regularization: penalize deviation from frozen BC policy
+                    bc_lambda = self.learning_config.bc_regularization_lambda
+                    if bc_lambda > 0 and hasattr(strategy, "bc_actor"):
+                        decay = self.learning_config.bc_regularization_decay
+                        if decay > 0:
+                            bc_lambda = bc_lambda * max(0.0, 1.0 - decay * self.n_updates)
+                        if bc_lambda > 0:
+                            with th.no_grad():
+                                bc_target = strategy.bc_actor(state_i)
+                            bc_reg = F.mse_loss(action_i, bc_target)
+                            actor_loss = actor_loss + bc_lambda * bc_reg
 
                     # Store the actor loss for this unit ID
                     unit_params[step][strategy.unit_id]["actor_loss"] = (

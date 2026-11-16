@@ -1,0 +1,4 @@
+,max_power,min_power,node,simulation,technology,unit_operator
+load_0,-90,0,5,ieee9_rl_egret_sced,demand,demand_operator
+load_1,-100,0,7,ieee9_rl_egret_sced,demand,demand_operator
+load_2,-125,0,9,ieee9_rl_egret_sced,demand,demand_operator

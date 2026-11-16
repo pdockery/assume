@@ -864,6 +864,52 @@ class LearningConfig:
     tau: float = 0.005
     target_policy_noise: float = 0.2
     target_noise_clip: float = 0.5
+    # SAC-specific entropy tuning
+    sac_initial_alpha: float = 0.2
+    sac_alpha_auto: bool = True
+    sac_target_entropy: float | None = None  # None = use -act_dim heuristic
+    sac_alpha_min: float = 0.0  # entropy floor — prevents alpha collapse (0 = no floor)
+    # Network architecture
+    actor_hidden_1: int = 256  # first hidden layer size
+    actor_hidden_2: int = 128  # second hidden layer size
+    # Prioritized Experience Replay (PER)
+    per_enabled: bool = False
+    per_alpha: float = 0.6  # prioritization exponent
+    per_beta_start: float = 0.4  # initial importance-sampling correction
+    per_beta_anneal_steps: int = 100_000  # steps to anneal beta → 1.0
+    # PopArt adaptive critic normalization
+    popart_enabled: bool = False
+    popart_beta: float = 3e-4  # EMA decay rate for running stats
+    # PPO-specific parameters
+    clip_ratio: float = 0.2  # clipped surrogate objective
+    entropy_coef: float = 0.01  # entropy bonus coefficient
+    vf_coef: float = 0.5  # value function loss coefficient
+    gae_lambda: float = 0.95  # GAE lambda for advantage estimation
+    ppo_max_grad_norm: float = 0.5  # gradient clipping norm
+    # DQN-specific parameters
+    n_price_bins: int = 100  # number of discrete price bins
+    n_vol_bins: int = 10  # number of discrete volume bins
+    epsilon_start: float = 1.0  # initial epsilon for epsilon-greedy
+    epsilon_end: float = 0.05  # final epsilon
+    epsilon_decay_episodes: int = 200  # episodes over which epsilon decays
+    dqn_grad_clip_norm: float = 1.0  # gradient clipping norm for DQN
+    boltzmann_tau_start: float = 1.0  # initial Boltzmann temperature (after epsilon phase)
+    boltzmann_tau_end: float = 0.1  # final Boltzmann temperature
+    boltzmann_decay_episodes: int = 300  # episodes to anneal temperature
+    # Distributional critic (Quantile Regression — DSAC / D4PG-style)
+    distributional_critic: bool = False  # use quantile regression critic
+    n_quantiles: int = 32  # number of quantile atoms
+    quantile_huber_kappa: float = 1.0  # Huber threshold for QR loss
+    reward_scale: float = 1.0  # divide rewards by this before critic training
+                               # (distributional critics need this since no PopArt;
+                               #  set to ~price_cap for rewards in [0, ~1])
+    # Critic warmup: train critic only for N steps before allowing actor updates.
+    # Prevents a randomly-initialized critic from corrupting a BC-warm-started actor.
+    critic_warmup_steps: int = 0
+    # BC regularization: penalize actor for deviating from BC policy.
+    # Keeps the actor anchored to per-observation BC targets (off-peak vs peak).
+    bc_regularization_lambda: float = 0.0  # 0 = off, 1.0 = strong anchoring
+    bc_regularization_decay: float = 0.0  # per-step decay (0 = constant)
 
     def __post_init__(self):
         """Calculate defaults that depend on other fields and validate inputs."""
@@ -880,6 +926,12 @@ class LearningConfig:
             )
 
             self.episodes_collecting_initial_experience = 1
+
+        if self.distributional_critic and self.popart_enabled:
+            raise ValueError(
+                "distributional_critic and popart_enabled are mutually exclusive. "
+                "The distributional representation handles reward scale naturally."
+            )
 
         # check that gradient_steps is positive
         if self.gradient_steps <= 0:

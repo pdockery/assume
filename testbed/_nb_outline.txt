@@ -1,0 +1,132 @@
+=== CRA (46 cells) ===
+  0 a1ec49b1                     mark | # Congestion Revenue Allocation on the WSCC 9-Bus Network
+  1 23099bd7                     mark | ## 0. Setup
+  2 colab-bootstrap              code | #@title ▶ Run me first — Colab setup (installs packages, fetches the helper modules)
+  3 0793a3d9                     code | import sys, os, importlib
+  4 fb996b5f                     mark | ### Generation & load table
+  5 832aa49a                     code | # Resource stack and loads on the shared network
+  6 a21564e6                     mark | ## 1. Shared network & shift factors
+  7 0b647f84                     code | pt = compute_ptdf(build_network(), slack_bus='1')
+  8 ef26c3db                     mark | ### Line admittance map
+  9 9a33584c                     code | pt = compute_ptdf(build_network(), slack_bus='1')
+ 10 0d723f4f                     mark | ## 2. Market engine and nodal dispatch
+ 11 form-one-engine-dispatch     mark | ### The dispatch each engine solves, its Lagrangian, and the bus prices
+ 12 ced2c9a5                     mark | ### Congestion rent
+ 13 6c94d88f                     mark | **Edit below:** generator costs, load levels, and line ratings. Limiting a line rating may
+ 14 84b7e33d                     code | # -- EDIT -- unified-clearing inputs --------------------------------------
+ 15 387e5a8a                     code | # Topology with DC power flow. Line WIDTH = susceptance (b=1/x); line COLOUR =
+ 16 b31d6e58                     mark | ### The nodal dispatch diagram, and the congestion shadow price
+ 17 20620f42                     code | # Nodal dispatch diagram (circlize / chord) of the unified clearing (reuses sup, dem, colors, res from above).
+ 18 39adf533                     mark | ### Composite figure 
+ 19 6147ea1a                     code | from nodal_plot import plot_combined_letter
+ 20 90b9e446                     mark | **Read it:** with `line_4` (6–7) limited to 40 MW, the binding internal limit
+ 21 03652ae5                     mark | ## 3. Two balancing authorities on the shared network
+ 22 5e553e85                     code | # Section 3 config: the two balancing authorities 
+ 23 7513ab5f                     code | # Map of the two BAs and the interconnectors (buses coloured by BA).
+ 24 1250b79c                     mark | ### Two allocation rules
+ 25 573693a8                     code | #  Methodology functions (edit these to refine the allocation rule) 
+ 26 62052bd1                     code | # -- Presentation helpers: per-example composite figure + ledgers -
+ 27 3c42a6a5                     mark | ### The scenario — an *internal* constraint, separation in the *other* BA
+ 28 0fa7e7e8                     code | # -- EDIT -- the scenario: congest a line INTERNAL to BA-1 (the exporter)
+ 29 f8c4dfab                     mark | **Reading the scenario.** The binding constraint is inside BA-1, so under
+ 30 c581a1cb                     code | # The scenario -- composite figure + homework-style congestion-revenue tables.
+ 31 b704ea0b                     mark | ### Unified vs independent operation — the two-engine counterfactual
+ 32 d28ee8f7                     code | # Independent operation: each BA as its OWN seams-style engine on the full network
+ 33 dbdf51f6                     mark | ### The two-BA dispatch, per BA (other BA greyed)
+ 34 3468a1a7                     code | # Per-BA composite of the INDEPENDENT two-BA dispatch (scenario network),
+ 35 autarky-unified-md           mark | ### Autarky vs unified -- the gains from trade and who captures them
+ 36 autarky-unified-code         code | # Autarky (independent) vs unified, homework-style -- one table per allocation method.
+ 37 xfer-intro-md                mark | ## 4. The transfer constraint — scheduling the seam
+ 38 xfer-form-md                 mark | ### The clearing with a transfer constraint — objective, Lagrangian, prices
+ 39 xfer-helpers-code            code | # -- EDIT -- the transfer (interchange scheduling) limit ---------------------
+ 40 xfer-base-code               code | # Sample dispatch -- the same base example, transfer limit at the physical envelope.
+ 41 xfer-binding-md              mark | ### The transfer constraint binding
+ 42 xfer-binding-code            code | # -- EDIT -- bind the seam: schedule less than the network wants to move ------
+ 43 xfer-combined-code           code | # Both revenue streams at once: the Section-2 internal limit AND the binding seam.
+ 44 xfer-read-md                 mark | **Read it.** With only the seam constrained (middle example) prices are flat
+ 45 ab7a7926                     mark | ### Where this goes next
+
+=== SEAMS (60 cells) ===
+  0 a1ec49b1                     mark | # Market Seams on the WSCC 9-Bus Network
+  1 23099bd7                     mark | ## 0. Setup
+  2 colab-bootstrap              code | #@title ▶ Run me first — Colab setup (installs packages, fetches the helper modules)
+  3 0793a3d9                     code | import sys, os, importlib
+  4 fb996b5f                     mark | ### Generation & load table
+  5 832aa49a                     code | # Resource stack and loads on the shared network
+  6 a21564e6                     mark | ## 1. Shared network & shift factors
+  7 0b647f84                     code | pt = compute_ptdf(build_network(), slack_bus='1')
+  8 ef26c3db                     mark | ### Line admittance map
+  9 9a33584c                     code | pt = compute_ptdf(build_network(), slack_bus='1')
+ 10 0d723f4f                     mark | ## 2. Market engine and nodal dispatch
+ 11 form-one-engine-dispatch     mark | ### The dispatch each engine solves, its Lagrangian, and the bus prices
+ 12 ced2c9a5                     mark | ### Congestion rent
+ 13 6c94d88f                     mark | **Edit below:** generator costs, load levels, and line ratings. Limiting a line rating may
+ 14 84b7e33d                     code | # -- EDIT -- unified-clearing inputs --------------------------------------
+ 15 387e5a8a                     code | # Topology with DC power flow. Line WIDTH = susceptance (b=1/x); line COLOUR =
+ 16 b31d6e58                     mark | ### The nodal dispatch diagram, and the congestion shadow price
+ 17 20620f42                     code | # Nodal dispatch diagram (circlize / chord) of the unified clearing (reuses sup, dem, colors, res from above).
+ 18 39adf533                     mark | ### Composite figure 
+ 19 6147ea1a                     code | from nodal_plot import plot_combined_letter
+ 20 90b9e446                     mark | **Read it:** with `line_4` (6–7) limited to 40 MW, the binding internal limit
+ 21 seams-footprints-md          mark | ## 3. Two market footprints on the shared network
+ 22 seams-footprints-config      code | # Section 3 config: the two market footprints
+ 23 seams-footprints-map         code | # Map of the two market footprints and the seam lines (buses coloured by market).
+ 24 seams-market-figure          code | # -- Presentation helper: one market's clearing as a combined set --
+ 25 e2b442e5                     mark | ## 4. Seams issue 1 — dispatch interference
+ 26 seams-form-superposition     mark | ### The flow superposition behind the overload
+ 27 8e4237c6                     code | # -- EDIT -- ratings; then the two blind clears (no interchange) -----------
+ 28 seams-blind-figs             code | # Each market's blind clear as its own set: the network it dispatches and the
+ 29 9829c97a                     code | ovl = pf[pf.overload]
+ 30 aa888e47                     code | # Visual: physical superposition. Both markets' gens/loads on one map,
+ 31 42212bef                     mark | **The point.** Market A's clear and Market B's clear both returned feasible,
+ 32 seams-accom-md               mark | ## 5. Seams issue 2 — inefficient accommodation of flows
+ 33 seams-form-accommodation     mark | ### The reservation and the effective limit
+ 34 seams-accom-code             code | # -- EDIT -- the reservation each market makes for the other's flows --------
+ 35 seams-accom-ladder           code | # The price of conservatism: sweep the ATC margin and watch the cost climb.
+ 36 seams-accom-read             mark | **Read it.** The accommodation works: the wire is safe, at a combined dispatch
+ 37 4d8455e3                     mark | ## 6. Seams issue 3 — participant-initiated interchange
+ 38 seams-form-dualgap           mark | ### The self-scheduled interchange, the seam dual gap, and the cost of the seam
+ 39 6d11f999                     code | # -- EDIT -- the schedule: seam buses, the sweep, and a contract cap --------
+ 40 06c8f325                     code | # The seam dual gap at every bus, at one operating point of the sweep.
+ 41 seams-trade-md               mark | ### One transaction, and who keeps the price difference
+ 42 a8b3de4b                     code | # -- EDIT -- the participant-initiated transaction ---------------------------
+ 43 seams-trade-settle           code | # Four settlements. Each market settles the schedule across its FULL PATH at
+ 44 seams-trade-read             mark | **Read it:** with the 50 MW schedule in the clear every price is flat —
+ 45 e586b0ed                     mark | **Settlement friction.** A megawatt sold by A and bought by B settles at A's
+ 46 seams-contractpath-md        mark | ### Where does the scheduled megawatt actually flow?
+ 47 seams-contractpath-code      code | # Contract-path view vs actual flows, with the Section-4 limit back in place.
+ 48 seams-risk-md                mark | ## 7. Initiating the trade means carrying the risk
+ 49 seams-risk-code              code | # -- EDIT -- what the participant cannot know when committing the schedule ---
+ 50 seams-risk-dist-md           mark | ### What the trader faces: the induced price distributions
+ 51 seams-risk-dist-fig          code | # The induced distributions. Market A: WHICH STEP -- a two-point mixture
+ 52 seams-risk-fig               code | # Figure 1 -- the payoff the trader actually holds: a continuum of outcomes.
+ 53 seams-risk-read              mark | **Read it:** B's spread is mean-preserving, but A's step risk is not
+ 54 seams-ledger-md              mark | ## 8. The seam ledger — who gains from closing the seam
+ 55 seams-ledger-code            code | # Settle each arrangement at its own prices; positions vs autarky.
+ 56 seams-ledger-read            mark | **Read it.** Trade shrinks the production-cost bill monotonically — $W$ falls
+ 57 b95dc33e                     mark | ## 9. Sandbox
+ 58 566e8617                     code | # -- EDIT -- free-form two-market experiment ---------------------------------
+ 59 7728101f                     mark | ---
+
+=== SHARED IDS (21) ===
+a1ec49b1                     ** DIFFERS **
+23099bd7                     IDENTICAL
+colab-bootstrap              IDENTICAL
+0793a3d9                     IDENTICAL
+fb996b5f                     IDENTICAL
+832aa49a                     IDENTICAL
+a21564e6                     IDENTICAL
+0b647f84                     IDENTICAL
+ef26c3db                     IDENTICAL
+9a33584c                     IDENTICAL
+0d723f4f                     IDENTICAL
+form-one-engine-dispatch     IDENTICAL
+ced2c9a5                     IDENTICAL
+6c94d88f                     IDENTICAL
+84b7e33d                     IDENTICAL
+387e5a8a                     IDENTICAL
+b31d6e58                     IDENTICAL
+20620f42                     IDENTICAL
+39adf533                     IDENTICAL
+6147ea1a                     ** DIFFERS **
+90b9e446                     IDENTICAL

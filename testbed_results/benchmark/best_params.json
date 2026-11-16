@@ -1,0 +1,24 @@
+{
+  "matd3": {
+    "learning_rate": 0.00190303683817358,
+    "noise_sigma": 0.2603902541101231,
+    "tau": 0.01595857358814127,
+    "gradient_steps": 5,
+    "batch_size": 32
+  },
+  "sac": {
+    "learning_rate": 0.00190303683817358,
+    "tau": 0.010502105436744277,
+    "gradient_steps": 23,
+    "batch_size": 64,
+    "sac_initial_alpha": 0.09445600138094695
+  },
+  "ppo": {
+    "learning_rate": 0.0003574712922600243,
+    "clip_ratio": 0.2901428612819832,
+    "entropy_coef": 0.029106359131330698,
+    "gae_lambda": 0.9538792635777333,
+    "gradient_steps": 5,
+    "vf_coef": 0.36699589025215196
+  }
+}

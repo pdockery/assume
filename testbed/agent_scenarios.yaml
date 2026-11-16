@@ -1,0 +1,41 @@
+# Agent-Based SCED Testbed Scenarios
+#
+# These scenarios run ASSUME agents bidding into Egret SCED clearing
+# on the IEEE 9-bus network. Agents use bidding strategies (naive or RL)
+# and the market clears via LP dispatch with nodal LMPs.
+#
+# Line name reference (from pandapower case9 → PyPSA):
+#   line_0: 1→4 (250 MW)    line_3: 3→6 (300 MW)    line_6: 8→2 (250 MW)
+#   line_1: 4→5 (250 MW)    line_4: 6→7 (150 MW)    line_7: 8→9 (250 MW)
+#   line_2: 5→6 (150 MW)    line_5: 7→8 (250 MW)    line_8: 9→4 (250 MW)
+
+base:
+  name: "Agent SCED — Base Case (No Congestion)"
+  market_mechanism: egret_sced
+  periods: 24
+  line_overrides: {}
+  # Bidding strategies: naive = bid at marginal cost (deterministic)
+  # Switch to "powerplant_energy_learning" for RL (requires torch)
+  strategy: powerplant_energy_naive
+
+congested:
+  name: "Agent SCED — Congested (Lines 4-5, 7-8 at 90 MW)"
+  market_mechanism: egret_sced
+  periods: 24
+  line_overrides:
+    line_1:
+      s_nom: 90.0
+    line_5:
+      s_nom: 90.0
+  strategy: powerplant_energy_naive
+
+heavy_congestion:
+  name: "Agent SCED — Heavy Congestion (Lines 4-5, 7-8 at 50 MW)"
+  market_mechanism: egret_sced
+  periods: 24
+  line_overrides:
+    line_1:
+      s_nom: 50.0
+    line_5:
+      s_nom: 50.0
+  strategy: powerplant_energy_naive

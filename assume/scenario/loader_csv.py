@@ -1119,15 +1119,28 @@ def run_learning(
 
     # -----------------------------------------
     # Information that needs to be stored across episodes, aka one simulation run
+    lc = world.learning_role.learning_config
+    _buf_kwargs = dict(
+        buffer_size=lc.replay_buffer_size,
+        obs_dim=world.learning_role.rl_algorithm.obs_dim,
+        act_dim=world.learning_role.rl_algorithm.act_dim,
+        n_rl_units=len(world.learning_role.rl_strats),
+        device=world.learning_role.device,
+        float_type=world.learning_role.float_type,
+    )
+    if lc.per_enabled and lc.algorithm != "ppo":
+        from assume.reinforcement_learning.buffer import PrioritizedReplayBuffer
+
+        _buffer = PrioritizedReplayBuffer(
+            alpha=lc.per_alpha,
+            beta_start=lc.per_beta_start,
+            beta_anneal_steps=lc.per_beta_anneal_steps,
+            **_buf_kwargs,
+        )
+    else:
+        _buffer = ReplayBuffer(**_buf_kwargs)
     inter_episodic_data = {
-        "buffer": ReplayBuffer(
-            buffer_size=world.learning_role.learning_config.replay_buffer_size,
-            obs_dim=world.learning_role.rl_algorithm.obs_dim,
-            act_dim=world.learning_role.rl_algorithm.act_dim,
-            n_rl_units=len(world.learning_role.rl_strats),
-            device=world.learning_role.device,
-            float_type=world.learning_role.float_type,
-        ),
+        "buffer": _buffer,
         "actors_and_critics": None,
         "max_eval": defaultdict(lambda: -1e9),
         "all_eval": defaultdict(list),

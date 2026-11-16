@@ -109,6 +109,8 @@ class TorchLearningStrategy(LearningStrategy):
             float_type=self.float_type,
             unique_obs_dim=self.unique_obs_dim,
             num_timeseries_obs_dim=self.num_timeseries_obs_dim,
+            actor_hidden_1=getattr(self.learning_config, "actor_hidden_1", 256),
+            actor_hidden_2=getattr(self.learning_config, "actor_hidden_2", 128),
         ).to(self.device)
         self.actor.load_state_dict(params["actor"])
         self.actor.eval()  # set the actor to evaluation mode
